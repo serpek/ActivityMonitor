@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Activity Tracker Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+
+        .card h2 {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+        }
+
+        .card h2::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: #667eea;
+            margin-right: 10px;
+            border-radius: 2px;
+        }
+
+        .status-display {
+            font-size: 3em;
+            font-weight: bold;
+            text-align: center;
+            padding: 30px;
+            border-radius: 10px;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+        }
+
+        .status-active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .status-inactive {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            box-shadow: 0 5px 20px rgba(245, 87, 108, 0.4);
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #666;
+        }
+
+        .info-value {
+            color: #333;
+            font-weight: 500;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            flex: 1;
+            min-width: 150px;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .log-container {
+            background: #1e1e1e;
+            border-radius: 10px;
+            padding: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .log-entry {
+            padding: 8px 0;
+            border-bottom: 1px solid #333;
+            color: #e0e0e0;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-time {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        .log-status-active {
+            color: #4caf50;
+            font-weight: bold;
+        }
+
+        .log-status-inactive {
+            color: #f44336;
+            font-weight: bold;
+        }
+
+        .config-panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+        }
+
+        .config-group {
+            margin-bottom: 20px;
+        }
+
+        .config-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #666;
+        }
+
+        .config-group input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+            transition: border-color 0.3s ease;
+        }
+
+        .config-group input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .config-group small {
+            display: block;
+            margin-top: 5px;
+            color: #888;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Browser Activity Tracker Demo</h1>
+            <p>Web tarayıcı penceresinde kullanıcı aktivitesini gözlemleyin</p>
+        </div>
+
+        <div class="config-panel">
+            <h2 style="color: #667eea; margin-bottom: 20px;">Yapılandırma</h2>
+            <div class="config-group">
+                <label for="inactivityThreshold">Hareketsizlik Eşiği (milisaniye)</label>
+                <input type="number" id="inactivityThreshold" value="10000" min="1000" step="1000">
+                <small>Kullanıcının hareketsiz kabul edilmesi için geçmesi gereken süre</small>
+            </div>
+            <div class="config-group">
+                <label for="throttleTime">Throttle Süresi (milisaniye)</label>
+                <input type="number" id="throttleTime" value="1000" min="100" step="100">
+                <small>Olayların ne sıklıkla işleneceği</small>
+            </div>
+        </div>
+
+        <div class="dashboard">
+            <div class="card">
+                <h2>Mevcut Durum</h2>
+                <div id="statusDisplay" class="status-display status-active">
+                    ACTIVE
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Bilgiler</h2>
+                <div class="info-item">
+                    <span class="info-label">İzleme Durumu:</span>
+                    <span class="info-value" id="trackingStatus">Durduruldu</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Son Aktivite:</span>
+                    <span class="info-value" id="lastActivity">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Son Değişiklikten Beri:</span>
+                    <span class="info-value" id="timeSinceActivity">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Toplam Olay Sayısı:</span>
+                    <span class="info-value" id="eventCount">0</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Kontroller</h2>
+                <div class="controls">
+                    <button class="btn-primary" id="startBtn" onclick="startTracking()">Başlat</button>
+                    <button class="btn-danger" id="stopBtn" onclick="stopTracking()" disabled>Durdur</button>
+                    <button class="btn-secondary" id="clearBtn" onclick="clearLogs()">Logları Temizle</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Aktivite Logları</h2>
+            <div class="log-container" id="logContainer">
+                <div class="log-entry">
+                    <span class="log-time">Sistem hazır</span>
+                    <span>Başlatmak için "Başlat" butonuna tıklayın</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Browser Activity Tracker v1.0.0 | TypeScript + RxJS</p>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/rxjs@7.8.0/dist/bundles/rxjs.umd.js"></script>
+    <script type="module">
+        // ActivityStatus enum
+        const ActivityStatus = {
+            ACTIVE: 'ACTIVE',
+            INACTIVE: 'INACTIVE'
+        };
+
+        // BrowserActivityTracker inline implementation (basitleştirilmiş demo versiyonu)
+        class BrowserActivityTracker {
+            constructor(config = {}) {
+                this.config = {
+                    inactivityThreshold: config.inactivityThreshold ?? 30000,
+                    throttleTime: config.throttleTime ?? 1000,
+                    useVisibilityApi: config.useVisibilityApi ?? true,
+                    useFocusEvents: config.useFocusEvents ?? true,
+                    debug: config.debug ?? false
+                };
+
+                this.lastActivityTime = new Date();
+                this.isTracking = false;
+                this.inactivityTimer = null;
+                this.eventSubscription = null;
+
+                const initialStatus = this.determineInitialStatus();
+                this.activitySubject = new rxjs.BehaviorSubject({
+                    status: initialStatus,
+                    timestamp: this.lastActivityTime
+                });
+
+                this.activity$ = this.activitySubject.asObservable().pipe(
+                    rxjs.operators.distinctUntilChanged((prev, curr) => prev.status === curr.status)
+                );
+            }
+
+            determineInitialStatus() {
+                if (this.config.useVisibilityApi && document.hidden) {
+                    return ActivityStatus.INACTIVE;
+                }
+                if (this.config.useFocusEvents && !document.hasFocus()) {
+                    return ActivityStatus.INACTIVE;
+                }
+                return ActivityStatus.ACTIVE;
+            }
+
+            start() {
+                if (this.isTracking) return;
+                this.isTracking = true;
+                this.setupEventListeners();
+                this.startInactivityTimer();
+            }
+
+            stop() {
+                if (!this.isTracking) return;
+                this.isTracking = false;
+                this.clearInactivityTimer();
+                this.removeEventListeners();
+            }
+
+            getCurrentStatus() {
+                return this.activitySubject.value.status;
+            }
+
+            getLastActivityTime() {
+                return this.lastActivityTime;
+            }
+
+            isCurrentlyTracking() {
+                return this.isTracking;
+            }
+
+            destroy() {
+                this.stop();
+                this.activitySubject.complete();
+            }
+
+            setupEventListeners() {
+                const activityEvents = [
+                    rxjs.fromEvent(document, 'mousemove'),
+                    rxjs.fromEvent(document, 'mousedown'),
+                    rxjs.fromEvent(document, 'keydown'),
+                    rxjs.fromEvent(document, 'keyup'),
+                    rxjs.fromEvent(document, 'scroll', { passive: true }),
+                    rxjs.fromEvent(document, 'touchstart', { passive: true }),
+                    rxjs.fromEvent(document, 'touchmove', { passive: true }),
+                    rxjs.fromEvent(document, 'click'),
+                    rxjs.fromEvent(window, 'wheel', { passive: true })
+                ];
+
+                this.eventSubscription = rxjs.merge(...activityEvents)
+                    .pipe(rxjs.operators.throttleTime(this.config.throttleTime))
+                    .subscribe(() => this.handleUserActivity());
+
+                if (this.config.useVisibilityApi) {
+                    this.visibilityHandler = this.handleVisibilityChange.bind(this);
+                    document.addEventListener('visibilitychange', this.visibilityHandler);
+                }
+
+                if (this.config.useFocusEvents) {
+                    this.focusHandler = this.handleFocus.bind(this);
+                    this.blurHandler = this.handleBlur.bind(this);
+                    window.addEventListener('focus', this.focusHandler);
+                    window.addEventListener('blur', this.blurHandler);
+                }
+            }
+
+            removeEventListeners() {
+                if (this.eventSubscription) {
+                    this.eventSubscription.unsubscribe();
+                    this.eventSubscription = null;
+                }
+
+                if (this.visibilityHandler) {
+                    document.removeEventListener('visibilitychange', this.visibilityHandler);
+                }
+
+                if (this.focusHandler) {
+                    window.removeEventListener('focus', this.focusHandler);
+                    window.removeEventListener('blur', this.blurHandler);
+                }
+            }
+
+            handleUserActivity() {
+                const wasInactive = this.activitySubject.value.status === ActivityStatus.INACTIVE;
+                this.lastActivityTime = new Date();
+                this.startInactivityTimer();
+
+                if (wasInactive) {
+                    this.setActivityStatus(ActivityStatus.ACTIVE);
+                }
+            }
+
+            handleVisibilityChange() {
+                if (document.hidden) {
+                    this.setActivityStatus(ActivityStatus.INACTIVE);
+                    this.clearInactivityTimer();
+                } else {
+                    this.setActivityStatus(ActivityStatus.ACTIVE);
+                    this.lastActivityTime = new Date();
+                    this.startInactivityTimer();
+                }
+            }
+
+            handleFocus() {
+                this.setActivityStatus(ActivityStatus.ACTIVE);
+                this.lastActivityTime = new Date();
+                this.startInactivityTimer();
+            }
+
+            handleBlur() {
+                this.setActivityStatus(ActivityStatus.INACTIVE);
+                this.clearInactivityTimer();
+            }
+
+            startInactivityTimer() {
+                this.clearInactivityTimer();
+                this.inactivityTimer = setTimeout(() => {
+                    this.setActivityStatus(ActivityStatus.INACTIVE);
+                }, this.config.inactivityThreshold);
+            }
+
+            clearInactivityTimer() {
+                if (this.inactivityTimer !== null) {
+                    clearTimeout(this.inactivityTimer);
+                    this.inactivityTimer = null;
+                }
+            }
+
+            setActivityStatus(status) {
+                const currentStatus = this.activitySubject.value.status;
+                if (currentStatus !== status) {
+                    const now = new Date();
+                    const event = {
+                        status,
+                        timestamp: now,
+                        timeSinceLastActivity: now.getTime() - this.lastActivityTime.getTime()
+                    };
+                    this.activitySubject.next(event);
+                }
+            }
+        }
+
+        // Global değişkenler
+        let tracker = null;
+        let eventCount = 0;
+
+        // DOM elementleri
+        const statusDisplay = document.getElementById('statusDisplay');
+        const trackingStatus = document.getElementById('trackingStatus');
+        const lastActivity = document.getElementById('lastActivity');
+        const timeSinceActivity = document.getElementById('timeSinceActivity');
+        const eventCountDisplay = document.getElementById('eventCount');
+        const logContainer = document.getElementById('logContainer');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+
+        // Fonksiyonlar
+        window.startTracking = function() {
+            const inactivityThreshold = parseInt(document.getElementById('inactivityThreshold').value);
+            const throttleTime = parseInt(document.getElementById('throttleTime').value);
+
+            if (tracker) {
+                tracker.destroy();
+            }
+
+            tracker = new BrowserActivityTracker({
+                inactivityThreshold,
+                throttleTime,
+                debug: true
+            });
+
+            tracker.activity$.subscribe(event => {
+                eventCount++;
+                updateUI(event);
+                addLog(event);
+            });
+
+            tracker.start();
+
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            trackingStatus.textContent = 'Aktif';
+
+            addLog({ status: 'INFO', timestamp: new Date(), message: 'İzleme başlatıldı' });
+        };
+
+        window.stopTracking = function() {
+            if (tracker) {
+                tracker.stop();
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                trackingStatus.textContent = 'Durduruldu';
+                addLog({ status: 'INFO', timestamp: new Date(), message: 'İzleme durduruldu' });
+            }
+        };
+
+        window.clearLogs = function() {
+            logContainer.innerHTML = '';
+            eventCount = 0;
+            eventCountDisplay.textContent = '0';
+        };
+
+        function updateUI(event) {
+            // Durum göstergesi
+            statusDisplay.textContent = event.status;
+            statusDisplay.className = 'status-display ' +
+                (event.status === ActivityStatus.ACTIVE ? 'status-active' : 'status-inactive');
+
+            // Bilgiler
+            lastActivity.textContent = formatTime(event.timestamp);
+            timeSinceActivity.textContent = event.timeSinceLastActivity
+                ? formatDuration(event.timeSinceLastActivity)
+                : '-';
+            eventCountDisplay.textContent = eventCount;
+        }
+
+        function addLog(event) {
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+
+            const time = document.createElement('span');
+            time.className = 'log-time';
+            time.textContent = `[${formatTime(event.timestamp)}]`;
+
+            const status = document.createElement('span');
+            if (event.status === 'INFO') {
+                status.textContent = event.message;
+            } else {
+                status.className = event.status === ActivityStatus.ACTIVE
+                    ? 'log-status-active'
+                    : 'log-status-inactive';
+                status.textContent = `Durum: ${event.status}`;
+
+                if (event.timeSinceLastActivity) {
+                    const duration = document.createElement('span');
+                    duration.textContent = ` (${formatDuration(event.timeSinceLastActivity)})`;
+                    status.appendChild(duration);
+                }
+            }
+
+            logEntry.appendChild(time);
+            logEntry.appendChild(status);
+            logContainer.insertBefore(logEntry, logContainer.firstChild);
+
+            // En fazla 50 log tut
+            while (logContainer.children.length > 50) {
+                logContainer.removeChild(logContainer.lastChild);
+            }
+        }
+
+        function formatTime(date) {
+            return date.toLocaleTimeString('tr-TR');
+        }
+
+        function formatDuration(ms) {
+            if (ms < 1000) return `${ms}ms`;
+            if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+            return `${(ms / 60000).toFixed(1)}dk`;
+        }
+    </script>
+</body>
+</html>
