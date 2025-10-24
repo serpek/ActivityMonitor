@@ -1,47 +1,73 @@
 import { BehaviorSubject, Observable, fromEvent, merge, Subscription } from 'rxjs';
-import { throttleTime, map, distinctUntilChanged } from 'rxjs/operators';
-import { ActivityStatus, ActivityEvent, ActivityTrackerConfig } from './types';
+import { throttleTime, distinctUntilChanged, filter } from 'rxjs/operators';
+import {
+  ActivityStatus,
+  ActivityEvent,
+  ActivityTrackerConfig,
+  ActivityReason,
+  DetailedActivityState,
+  TabSyncMessage
+} from './types';
 
 /**
- * BrowserActivityTracker - Web tarayıcı penceresinde kullanıcı aktivitesini gözlemleyen sınıf
+ * BrowserActivityTracker - Gelişmiş web tarayıcı aktivite izleyici
  *
- * Bu sınıf, fare hareketleri, klavye girişleri, dokunma olayları ve pencere odağı gibi
- * çeşitli tarayıcı olaylarını dinleyerek kullanıcının aktif olup olmadığını belirler.
- *
- * Aktivite durumu değişiklikleri RxJS Observable pattern kullanılarak yayınlanır,
- * böylece tüketici kod reaktif bir şekilde bu değişikliklere abone olabilir.
+ * Bu sınıf, kullanıcının web sayfası ile etkileşimde olup olmadığını detaylı bir şekilde izler:
+ * - Fare, klavye, dokunma ve scroll aktiviteleri
+ * - Pencere odağı ve görünürlük durumu
+ * - Ekran kilidi durumu
+ * - Ağ bağlantısı durumu
+ * - Multi-tab koordinasyonu (sadece aktif tab'de listener'lar çalışır)
+ * - Her aktivite değişikliği için detaylı neden bilgisi
  *
  * @example
  * ```typescript
  * const tracker = new BrowserActivityTracker({
- *   inactivityThreshold: 30000, // 30 saniye
- *   throttleTime: 1000 // 1 saniye
+ *   inactivityThreshold: 30000,
+ *   useMultiTabSync: true
  * });
  *
- * // Aktivite değişikliklerine abone ol
  * tracker.activity$.subscribe(event => {
- *   console.log('Aktivite durumu:', event.status);
+ *   console.log('Status:', event.status);
+ *   console.log('Reason:', event.reason);
+ *   console.log('Detailed State:', event.detailedState);
  * });
  *
- * // İzlemeyi başlat
  * tracker.start();
- *
- * // İzlemeyi durdur
- * // tracker.stop();
  * ```
  */
 export class BrowserActivityTracker {
   private readonly config: Required<ActivityTrackerConfig>;
   private activitySubject: BehaviorSubject<ActivityEvent>;
   private inactivityTimer: number | null = null;
-  private lastActivityTime: Date;
+
+  // Detaylı state tracking
+  private detailedState: DetailedActivityState;
+
+  // Event subscriptions
+  private mouseSubscription: Subscription | null = null;
+  private keyboardSubscription: Subscription | null = null;
+  private touchSubscription: Subscription | null = null;
+  private scrollSubscription: Subscription | null = null;
+
+  // Diğer event handler'lar
+  private visibilityHandler: (() => void) | null = null;
+  private focusHandler: (() => void) | null = null;
+  private blurHandler: (() => void) | null = null;
+  private onlineHandler: (() => void) | null = null;
+  private offlineHandler: (() => void) | null = null;
+
+  // Multi-tab koordinasyonu
+  private broadcastChannel: BroadcastChannel | null = null;
+  private readonly tabId: string;
+  private isCurrentTabActive = true;
+
+  // Tracking durumu
   private isTracking = false;
-  private eventSubscription: Subscription | null = null;
-  private boundEventHandler: (() => void) | null = null;
+  private areListenersActive = false;
 
   /**
    * Aktivite durumu değişikliklerini yayınlayan Observable
-   * Tüketici kod bu observable'a abone olarak aktivite güncellemeleri alabilir
    */
   public readonly activity$: Observable<ActivityEvent>;
 
@@ -57,40 +83,90 @@ export class BrowserActivityTracker {
       throttleTime: config.throttleTime ?? 1000,
       useVisibilityApi: config.useVisibilityApi ?? true,
       useFocusEvents: config.useFocusEvents ?? true,
+      trackMouseActivity: config.trackMouseActivity ?? true,
+      trackKeyboardActivity: config.trackKeyboardActivity ?? true,
+      trackTouchActivity: config.trackTouchActivity ?? true,
+      trackScrollActivity: config.trackScrollActivity ?? true,
+      trackScreenLock: config.trackScreenLock ?? true,
+      trackNetworkStatus: config.trackNetworkStatus ?? true,
+      useMultiTabSync: config.useMultiTabSync ?? true,
+      syncChannelName: config.syncChannelName ?? 'browser_activity_tracker',
+      pauseListenersOnInactiveTab: config.pauseListenersOnInactiveTab ?? true,
+      emitDetailedState: config.emitDetailedState ?? true,
       debug: config.debug ?? false
     };
 
-    this.lastActivityTime = new Date();
+    // Benzersiz tab ID oluştur
+    this.tabId = this.generateTabId();
+
+    // İlk detaylı state'i oluştur
+    this.detailedState = this.createInitialDetailedState();
 
     // İlk aktivite durumunu belirle
     const initialStatus = this.determineInitialStatus();
-
-    this.activitySubject = new BehaviorSubject<ActivityEvent>({
-      status: initialStatus,
-      timestamp: this.lastActivityTime
-    });
-
-    this.activity$ = this.activitySubject.asObservable().pipe(
-      distinctUntilChanged((prev, curr) => prev.status === curr.status)
+    const initialEvent = this.createActivityEvent(
+      initialStatus,
+      'initialization'
     );
 
-    this.log('BrowserActivityTracker initialized', this.config);
+    this.activitySubject = new BehaviorSubject<ActivityEvent>(initialEvent);
+
+    // Observable'ı oluştur - durum değişikliklerini filtrele
+    this.activity$ = this.activitySubject.asObservable().pipe(
+      distinctUntilChanged((prev, curr) =>
+        prev.status === curr.status &&
+        prev.reason === curr.reason
+      )
+    );
+
+    this.log('BrowserActivityTracker initialized', {
+      tabId: this.tabId,
+      config: this.config,
+      initialState: this.detailedState
+    });
   }
 
   /**
-   * İlk aktivite durumunu belirler (sayfa görünürlüğü ve odak durumuna göre)
+   * Benzersiz tab ID oluştur
+   */
+  private generateTabId(): string {
+    return `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * İlk detaylı state'i oluştur
+   */
+  private createInitialDetailedState(): DetailedActivityState {
+    const now = new Date();
+
+    return {
+      windowVisible: typeof document !== 'undefined' ? !document.hidden : true,
+      windowFocused: typeof document !== 'undefined' ? document.hasFocus() : true,
+      pageVisible: typeof document !== 'undefined' ? !document.hidden : true,
+      hasMouseActivity: false,
+      hasKeyboardActivity: false,
+      hasTouchActivity: false,
+      hasScrollActivity: false,
+      isScreenLocked: false,
+      isNetworkOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+      isTabActive: true,
+      lastActivityTime: now
+    };
+  }
+
+  /**
+   * İlk aktivite durumunu belirle
    */
   private determineInitialStatus(): ActivityStatus {
     if (typeof document === 'undefined') {
       return ActivityStatus.ACTIVE;
     }
 
-    // Visibility API kontrolü
+    // Sayfa gizli veya odakta değilse INACTIVE
     if (this.config.useVisibilityApi && document.hidden) {
       return ActivityStatus.INACTIVE;
     }
 
-    // Focus durumu kontrolü
     if (this.config.useFocusEvents && !document.hasFocus()) {
       return ActivityStatus.INACTIVE;
     }
@@ -99,10 +175,7 @@ export class BrowserActivityTracker {
   }
 
   /**
-   * Kullanıcı aktivite izlemeyi başlatır
-   *
-   * Bu metod çağrıldığında, tüm tarayıcı olayları dinlenmeye başlanır
-   * ve aktivite durumu değişiklikleri activity$ observable üzerinden yayınlanır.
+   * Kullanıcı aktivite izlemeyi başlat
    */
   public start(): void {
     if (this.isTracking) {
@@ -118,14 +191,25 @@ export class BrowserActivityTracker {
     this.isTracking = true;
     this.log('Starting activity tracking');
 
-    this.setupEventListeners();
+    // Multi-tab koordinasyonu başlat
+    if (this.config.useMultiTabSync) {
+      this.setupMultiTabSync();
+    }
+
+    // Tab'ın aktif olup olmadığını kontrol et
+    this.checkTabActiveState();
+
+    // Listener'ları başlat (tab aktifse)
+    if (this.isCurrentTabActive || !this.config.pauseListenersOnInactiveTab) {
+      this.startListeners();
+    }
+
+    // Hareketsizlik timer'ını başlat
     this.startInactivityTimer();
   }
 
   /**
-   * Kullanıcı aktivite izlemeyi durdurur
-   *
-   * Tüm olay dinleyicileri kaldırılır ve kaynaklar temizlenir.
+   * Kullanıcı aktivite izlemeyi durdur
    */
   public stop(): void {
     if (!this.isTracking) {
@@ -136,174 +220,369 @@ export class BrowserActivityTracker {
     this.isTracking = false;
     this.log('Stopping activity tracking');
 
+    this.stopListeners();
     this.clearInactivityTimer();
-    this.removeEventListeners();
+
+    if (this.broadcastChannel) {
+      this.broadcastChannel.close();
+      this.broadcastChannel = null;
+    }
   }
 
   /**
-   * Mevcut aktivite durumunu döndürür
+   * Event listener'ları başlat
    */
-  public getCurrentStatus(): ActivityStatus {
-    return this.activitySubject.value.status;
-  }
-
-  /**
-   * Son aktivite zamanını döndürür
-   */
-  public getLastActivityTime(): Date {
-    return this.lastActivityTime;
-  }
-
-  /**
-   * Tracker'ın şu anda izleme yapıp yapmadığını döndürür
-   */
-  public isCurrentlyTracking(): boolean {
-    return this.isTracking;
-  }
-
-  /**
-   * Kaynakları temizler ve tracker'ı kapatır
-   * Bu metod çağrıldıktan sonra tracker kullanılamaz hale gelir
-   */
-  public destroy(): void {
-    this.stop();
-    this.activitySubject.complete();
-    this.log('Tracker destroyed');
-  }
-
-  /**
-   * Tüm kullanıcı etkileşim olaylarını dinlemek için event listener'ları kurar
-   */
-  private setupEventListeners(): void {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
+  private startListeners(): void {
+    if (this.areListenersActive) {
       return;
     }
 
-    // Tüm aktivite olaylarını bir araya getir
-    const activityEvents: Observable<Event>[] = [
+    this.areListenersActive = true;
+    this.log('Starting event listeners');
+
+    // Fare aktiviteleri
+    if (this.config.trackMouseActivity) {
+      this.setupMouseListeners();
+    }
+
+    // Klavye aktiviteleri
+    if (this.config.trackKeyboardActivity) {
+      this.setupKeyboardListeners();
+    }
+
+    // Dokunma aktiviteleri
+    if (this.config.trackTouchActivity) {
+      this.setupTouchListeners();
+    }
+
+    // Scroll aktiviteleri
+    if (this.config.trackScrollActivity) {
+      this.setupScrollListeners();
+    }
+
+    // Visibility API
+    if (this.config.useVisibilityApi) {
+      this.setupVisibilityListener();
+    }
+
+    // Focus/Blur events
+    if (this.config.useFocusEvents) {
+      this.setupFocusListeners();
+    }
+
+    // Network status
+    if (this.config.trackNetworkStatus) {
+      this.setupNetworkListeners();
+    }
+  }
+
+  /**
+   * Event listener'ları durdur
+   */
+  private stopListeners(): void {
+    if (!this.areListenersActive) {
+      return;
+    }
+
+    this.areListenersActive = false;
+    this.log('Stopping event listeners');
+
+    // Tüm subscriptions'ları iptal et
+    if (this.mouseSubscription) {
+      this.mouseSubscription.unsubscribe();
+      this.mouseSubscription = null;
+    }
+
+    if (this.keyboardSubscription) {
+      this.keyboardSubscription.unsubscribe();
+      this.keyboardSubscription = null;
+    }
+
+    if (this.touchSubscription) {
+      this.touchSubscription.unsubscribe();
+      this.touchSubscription = null;
+    }
+
+    if (this.scrollSubscription) {
+      this.scrollSubscription.unsubscribe();
+      this.scrollSubscription = null;
+    }
+
+    // Diğer event listener'ları kaldır
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+
+    if (this.focusHandler && this.blurHandler) {
+      window.removeEventListener('focus', this.focusHandler);
+      window.removeEventListener('blur', this.blurHandler);
+      this.focusHandler = null;
+      this.blurHandler = null;
+    }
+
+    if (this.onlineHandler && this.offlineHandler) {
+      window.removeEventListener('online', this.onlineHandler);
+      window.removeEventListener('offline', this.offlineHandler);
+      this.onlineHandler = null;
+      this.offlineHandler = null;
+    }
+  }
+
+  /**
+   * Fare event listener'larını kur
+   */
+  private setupMouseListeners(): void {
+    const mouseEvents = [
       fromEvent(document, 'mousemove'),
       fromEvent(document, 'mousedown'),
-      fromEvent(document, 'keydown'),
-      fromEvent(document, 'keyup'),
-      fromEvent(document, 'keypress'),
-      fromEvent(document, 'scroll', { passive: true }),
-      fromEvent(document, 'touchstart', { passive: true }),
-      fromEvent(document, 'touchmove', { passive: true }),
+      fromEvent(document, 'mouseup'),
       fromEvent(document, 'click'),
       fromEvent(window, 'wheel', { passive: true })
     ];
 
-    // Tüm olayları birleştir ve throttle uygula
-    this.eventSubscription = merge(...activityEvents)
-      .pipe(
-        throttleTime(this.config.throttleTime),
-        map(() => this.createActivityEvent())
-      )
+    this.mouseSubscription = merge(...mouseEvents)
+      .pipe(throttleTime(this.config.throttleTime))
       .subscribe(() => {
-        this.handleUserActivity();
+        this.handleMouseActivity();
       });
-
-    // Visibility API event listener'ı
-    if (this.config.useVisibilityApi) {
-      this.boundEventHandler = this.handleVisibilityChange.bind(this);
-      document.addEventListener('visibilitychange', this.boundEventHandler);
-    }
-
-    // Focus/Blur event listener'ları
-    if (this.config.useFocusEvents) {
-      window.addEventListener('focus', this.handleFocus.bind(this));
-      window.addEventListener('blur', this.handleBlur.bind(this));
-    }
-
-    this.log('Event listeners set up');
   }
 
   /**
-   * Tüm event listener'ları kaldırır
+   * Klavye event listener'larını kur
    */
-  private removeEventListeners(): void {
-    if (this.eventSubscription) {
-      this.eventSubscription.unsubscribe();
-      this.eventSubscription = null;
-    }
+  private setupKeyboardListeners(): void {
+    const keyboardEvents = [
+      fromEvent(document, 'keydown'),
+      fromEvent(document, 'keyup'),
+      fromEvent(document, 'keypress')
+    ];
 
-    if (this.boundEventHandler && this.config.useVisibilityApi) {
-      document.removeEventListener('visibilitychange', this.boundEventHandler);
-      this.boundEventHandler = null;
-    }
-
-    if (this.config.useFocusEvents) {
-      window.removeEventListener('focus', this.handleFocus.bind(this));
-      window.removeEventListener('blur', this.handleBlur.bind(this));
-    }
-
-    this.log('Event listeners removed');
+    this.keyboardSubscription = merge(...keyboardEvents)
+      .pipe(throttleTime(this.config.throttleTime))
+      .subscribe(() => {
+        this.handleKeyboardActivity();
+      });
   }
 
   /**
-   * Kullanıcı aktivitesi tespit edildiğinde çağrılır
+   * Dokunma event listener'larını kur
    */
-  private handleUserActivity(): void {
+  private setupTouchListeners(): void {
+    const touchEvents = [
+      fromEvent(document, 'touchstart', { passive: true }),
+      fromEvent(document, 'touchmove', { passive: true }),
+      fromEvent(document, 'touchend', { passive: true })
+    ];
+
+    this.touchSubscription = merge(...touchEvents)
+      .pipe(throttleTime(this.config.throttleTime))
+      .subscribe(() => {
+        this.handleTouchActivity();
+      });
+  }
+
+  /**
+   * Scroll event listener'larını kur
+   */
+  private setupScrollListeners(): void {
+    this.scrollSubscription = fromEvent(document, 'scroll', { passive: true })
+      .pipe(throttleTime(this.config.throttleTime))
+      .subscribe(() => {
+        this.handleScrollActivity();
+      });
+  }
+
+  /**
+   * Visibility API listener'ını kur
+   */
+  private setupVisibilityListener(): void {
+    this.visibilityHandler = () => {
+      this.handleVisibilityChange();
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+  }
+
+  /**
+   * Focus/Blur listener'larını kur
+   */
+  private setupFocusListeners(): void {
+    this.focusHandler = () => {
+      this.handleWindowFocus();
+    };
+    this.blurHandler = () => {
+      this.handleWindowBlur();
+    };
+
+    window.addEventListener('focus', this.focusHandler);
+    window.addEventListener('blur', this.blurHandler);
+  }
+
+  /**
+   * Network status listener'larını kur
+   */
+  private setupNetworkListeners(): void {
+    this.onlineHandler = () => {
+      this.handleNetworkOnline();
+    };
+    this.offlineHandler = () => {
+      this.handleNetworkOffline();
+    };
+
+    window.addEventListener('online', this.onlineHandler);
+    window.addEventListener('offline', this.offlineHandler);
+  }
+
+  /**
+   * Fare aktivitesi işle
+   */
+  private handleMouseActivity(): void {
+    this.log('Mouse activity detected');
+
+    const now = new Date();
+    this.detailedState.hasMouseActivity = true;
+    this.detailedState.lastMouseActivityTime = now;
+    this.detailedState.lastActivityTime = now;
+
+    this.handleUserActivity('mouse_activity');
+  }
+
+  /**
+   * Klavye aktivitesi işle
+   */
+  private handleKeyboardActivity(): void {
+    this.log('Keyboard activity detected');
+
+    const now = new Date();
+    this.detailedState.hasKeyboardActivity = true;
+    this.detailedState.lastKeyboardActivityTime = now;
+    this.detailedState.lastActivityTime = now;
+
+    this.handleUserActivity('keyboard_activity');
+  }
+
+  /**
+   * Dokunma aktivitesi işle
+   */
+  private handleTouchActivity(): void {
+    this.log('Touch activity detected');
+
+    const now = new Date();
+    this.detailedState.hasTouchActivity = true;
+    this.detailedState.lastTouchActivityTime = now;
+    this.detailedState.lastActivityTime = now;
+
+    this.handleUserActivity('touch_activity');
+  }
+
+  /**
+   * Scroll aktivitesi işle
+   */
+  private handleScrollActivity(): void {
+    this.log('Scroll activity detected');
+
+    const now = new Date();
+    this.detailedState.hasScrollActivity = true;
+    this.detailedState.lastScrollActivityTime = now;
+    this.detailedState.lastActivityTime = now;
+
+    this.handleUserActivity('scroll_activity');
+  }
+
+  /**
+   * Genel kullanıcı aktivitesi işle
+   */
+  private handleUserActivity(reason: ActivityReason): void {
     const wasInactive = this.activitySubject.value.status === ActivityStatus.INACTIVE;
 
-    this.lastActivityTime = new Date();
     this.startInactivityTimer();
 
     if (wasInactive) {
-      this.setActivityStatus(ActivityStatus.ACTIVE);
-      this.log('User became active');
+      this.setActivityStatus(ActivityStatus.ACTIVE, reason);
+      this.log('User became active', { reason });
     }
   }
 
   /**
-   * Sayfa görünürlük değişikliğini işler (Visibility API)
+   * Visibility değişikliğini işle
    */
   private handleVisibilityChange(): void {
-    if (document.hidden) {
-      this.setActivityStatus(ActivityStatus.INACTIVE);
+    const isHidden = document.hidden;
+
+    this.detailedState.pageVisible = !isHidden;
+
+    if (isHidden) {
+      this.log('Page hidden');
+      this.setActivityStatus(ActivityStatus.INACTIVE, 'page_hidden');
       this.clearInactivityTimer();
-      this.log('Page hidden - user inactive');
     } else {
-      this.setActivityStatus(ActivityStatus.ACTIVE);
-      this.lastActivityTime = new Date();
+      this.log('Page visible');
+      this.detailedState.lastActivityTime = new Date();
+      this.setActivityStatus(ActivityStatus.ACTIVE, 'page_visible');
       this.startInactivityTimer();
-      this.log('Page visible - user active');
     }
   }
 
   /**
-   * Pencere odağını kazandığında çağrılır
+   * Window odak kazandığında işle
    */
-  private handleFocus(): void {
-    this.setActivityStatus(ActivityStatus.ACTIVE);
-    this.lastActivityTime = new Date();
+  private handleWindowFocus(): void {
+    this.log('Window focused');
+
+    this.detailedState.windowFocused = true;
+    this.detailedState.windowVisible = true;
+    this.detailedState.lastActivityTime = new Date();
+
+    this.setActivityStatus(ActivityStatus.ACTIVE, 'window_focus');
     this.startInactivityTimer();
-    this.log('Window focused - user active');
   }
 
   /**
-   * Pencere odağını kaybettiğinde çağrılır
+   * Window odak kaybettiğinde işle
    */
-  private handleBlur(): void {
-    this.setActivityStatus(ActivityStatus.INACTIVE);
+  private handleWindowBlur(): void {
+    this.log('Window blurred');
+
+    this.detailedState.windowFocused = false;
+
+    this.setActivityStatus(ActivityStatus.INACTIVE, 'window_blur');
     this.clearInactivityTimer();
-    this.log('Window blurred - user inactive');
   }
 
   /**
-   * Hareketsizlik zamanlayıcısını başlatır veya sıfırlar
+   * Network online olduğunda işle
+   */
+  private handleNetworkOnline(): void {
+    this.log('Network online');
+
+    this.detailedState.isNetworkOnline = true;
+    this.setActivityStatus(ActivityStatus.ACTIVE, 'network_online');
+  }
+
+  /**
+   * Network offline olduğunda işle
+   */
+  private handleNetworkOffline(): void {
+    this.log('Network offline');
+
+    this.detailedState.isNetworkOnline = false;
+    this.setActivityStatus(ActivityStatus.INACTIVE, 'network_offline');
+  }
+
+  /**
+   * Hareketsizlik timer'ını başlat
    */
   private startInactivityTimer(): void {
     this.clearInactivityTimer();
 
     this.inactivityTimer = window.setTimeout(() => {
-      this.setActivityStatus(ActivityStatus.INACTIVE);
-      this.log('Inactivity threshold reached - user inactive');
+      this.log('Inactivity threshold reached');
+      this.setActivityStatus(ActivityStatus.INACTIVE, 'inactivity_timeout');
     }, this.config.inactivityThreshold);
   }
 
   /**
-   * Hareketsizlik zamanlayıcısını temizler
+   * Hareketsizlik timer'ını temizle
    */
   private clearInactivityTimer(): void {
     if (this.inactivityTimer !== null) {
@@ -313,38 +592,283 @@ export class BrowserActivityTracker {
   }
 
   /**
-   * Aktivite durumunu günceller ve observable üzerinden yayınlar
+   * Aktivite durumunu güncelle
    */
-  private setActivityStatus(status: ActivityStatus): void {
+  private setActivityStatus(status: ActivityStatus, reason: ActivityReason): void {
     const currentStatus = this.activitySubject.value.status;
+    const currentReason = this.activitySubject.value.reason;
 
-    if (currentStatus !== status) {
-      const event = this.createActivityEvent(status);
-      this.activitySubject.next(event);
+    // Aynı durum ve neden ise skip et
+    if (currentStatus === status && currentReason === reason) {
+      return;
+    }
+
+    const event = this.createActivityEvent(status, reason, currentStatus);
+    this.activitySubject.next(event);
+
+    // Multi-tab sync varsa diğer tab'lere bildir
+    if (this.config.useMultiTabSync && this.broadcastChannel) {
+      this.broadcastActivityUpdate(event);
     }
   }
 
   /**
-   * ActivityEvent nesnesi oluşturur
+   * ActivityEvent oluştur
    */
-  private createActivityEvent(status?: ActivityStatus): ActivityEvent {
-    const currentStatus = status ?? this.activitySubject.value.status;
+  private createActivityEvent(
+    status: ActivityStatus,
+    reason: ActivityReason,
+    previousStatus?: ActivityStatus
+  ): ActivityEvent {
     const now = new Date();
-    const timeSinceLastActivity = now.getTime() - this.lastActivityTime.getTime();
+    const timeSinceLastActivity = now.getTime() - this.detailedState.lastActivityTime.getTime();
 
     return {
-      status: currentStatus,
+      status,
+      reason,
       timestamp: now,
-      timeSinceLastActivity
+      timeSinceLastActivity,
+      detailedState: { ...this.detailedState },
+      isCurrentTabActive: this.isCurrentTabActive,
+      previousStatus
     };
   }
 
   /**
-   * Debug modu aktifse log mesajı yazdırır
+   * Multi-tab koordinasyonu kur
+   */
+  private setupMultiTabSync(): void {
+    if (typeof BroadcastChannel === 'undefined') {
+      this.log('BroadcastChannel not supported');
+      return;
+    }
+
+    try {
+      this.broadcastChannel = new BroadcastChannel(this.config.syncChannelName);
+
+      this.broadcastChannel.onmessage = (event: MessageEvent<TabSyncMessage>) => {
+        this.handleTabSyncMessage(event.data);
+      };
+
+      // Diğer tab'lere bu tab'ın aktif olduğunu bildir
+      this.broadcastTabActivation();
+
+      this.log('Multi-tab sync initialized', { channel: this.config.syncChannelName });
+    } catch (error) {
+      console.error('Failed to setup BroadcastChannel:', error);
+    }
+  }
+
+  /**
+   * Tab'ler arası mesaj işle
+   */
+  private handleTabSyncMessage(message: TabSyncMessage): void {
+    // Kendi mesajlarını ignore et
+    if (message.tabId === this.tabId) {
+      return;
+    }
+
+    this.log('Received tab sync message', message);
+
+    switch (message.type) {
+      case 'tab_activated':
+        // Başka bir tab aktif oldu, bu tab pasif
+        if (this.isCurrentTabActive) {
+          this.handleTabDeactivation();
+        }
+        break;
+
+      case 'tab_deactivated':
+        // Başka bir tab deaktif oldu
+        break;
+
+      case 'activity_update':
+        // Başka tab'den aktivite güncellemesi
+        if (message.activityState && !this.isCurrentTabActive) {
+          // Pasif tab ise aktif tab'den gelen state'i kullan
+          this.log('Received activity update from active tab', message.activityState);
+        }
+        break;
+
+      case 'state_request':
+        // State isteği aldı, cevap gönder
+        if (this.isCurrentTabActive) {
+          this.broadcastStateResponse(message.requestId);
+        }
+        break;
+
+      case 'state_response':
+        // State cevabı aldı
+        break;
+    }
+  }
+
+  /**
+   * Tab aktif mi kontrol et
+   */
+  private checkTabActiveState(): void {
+    // İlk başlangıçta sayfa görünürse ve odaktaysa bu tab aktif
+    const isVisible = !document.hidden;
+    const hasFocus = document.hasFocus();
+
+    this.isCurrentTabActive = isVisible && hasFocus;
+    this.detailedState.isTabActive = this.isCurrentTabActive;
+
+    this.log('Tab active state checked', {
+      isActive: this.isCurrentTabActive,
+      isVisible,
+      hasFocus
+    });
+  }
+
+  /**
+   * Tab aktif olduğunu bildir
+   */
+  private broadcastTabActivation(): void {
+    if (!this.broadcastChannel) return;
+
+    const message: TabSyncMessage = {
+      type: 'tab_activated',
+      tabId: this.tabId,
+      timestamp: Date.now()
+    };
+
+    this.broadcastChannel.postMessage(message);
+    this.log('Broadcasted tab activation');
+  }
+
+  /**
+   * Tab deaktif olduğunu işle
+   */
+  private handleTabDeactivation(): void {
+    this.log('Tab deactivated');
+
+    this.isCurrentTabActive = false;
+    this.detailedState.isTabActive = false;
+
+    // Listener'ları durdur
+    if (this.config.pauseListenersOnInactiveTab) {
+      this.stopListeners();
+    }
+
+    this.setActivityStatus(ActivityStatus.INACTIVE, 'tab_deactivated');
+  }
+
+  /**
+   * Aktivite güncellemesini broadcast et
+   */
+  private broadcastActivityUpdate(event: ActivityEvent): void {
+    if (!this.broadcastChannel || !this.isCurrentTabActive) return;
+
+    const message: TabSyncMessage = {
+      type: 'activity_update',
+      tabId: this.tabId,
+      timestamp: Date.now(),
+      activityState: {
+        status: event.status,
+        reason: event.reason,
+        detailedState: event.detailedState
+      }
+    };
+
+    this.broadcastChannel.postMessage(message);
+  }
+
+  /**
+   * State response broadcast et
+   */
+  private broadcastStateResponse(requestId?: string): void {
+    if (!this.broadcastChannel) return;
+
+    const currentEvent = this.activitySubject.value;
+
+    const message: TabSyncMessage = {
+      type: 'state_response',
+      tabId: this.tabId,
+      timestamp: Date.now(),
+      requestId,
+      activityState: {
+        status: currentEvent.status,
+        reason: currentEvent.reason,
+        detailedState: currentEvent.detailedState
+      }
+    };
+
+    this.broadcastChannel.postMessage(message);
+  }
+
+  /**
+   * Mevcut aktivite durumunu al
+   */
+  public getCurrentStatus(): ActivityStatus {
+    return this.activitySubject.value.status;
+  }
+
+  /**
+   * Mevcut aktivite nedenini al
+   */
+  public getCurrentReason(): ActivityReason {
+    return this.activitySubject.value.reason;
+  }
+
+  /**
+   * Detaylı aktivite durumunu al
+   */
+  public getDetailedState(): DetailedActivityState {
+    return { ...this.detailedState };
+  }
+
+  /**
+   * Son aktivite zamanını al
+   */
+  public getLastActivityTime(): Date {
+    return this.detailedState.lastActivityTime;
+  }
+
+  /**
+   * Tab'ın aktif olup olmadığını al
+   */
+  public isTabActive(): boolean {
+    return this.isCurrentTabActive;
+  }
+
+  /**
+   * İzleme durumunu al
+   */
+  public isCurrentlyTracking(): boolean {
+    return this.isTracking;
+  }
+
+  /**
+   * Listener'ların aktif olup olmadığını al
+   */
+  public areListenersCurrentlyActive(): boolean {
+    return this.areListenersActive;
+  }
+
+  /**
+   * Tab ID'sini al
+   */
+  public getTabId(): string {
+    return this.tabId;
+  }
+
+  /**
+   * Kaynakları temizle ve tracker'ı kapat
+   */
+  public destroy(): void {
+    this.stop();
+    this.activitySubject.complete();
+    this.log('Tracker destroyed');
+  }
+
+  /**
+   * Debug log
    */
   private log(message: string, data?: any): void {
     if (this.config.debug) {
-      console.log(`[BrowserActivityTracker] ${message}`, data ?? '');
+      const logData = data ? data : '';
+      console.log(`[BrowserActivityTracker:${this.tabId}] ${message}`, logData);
     }
   }
 }
