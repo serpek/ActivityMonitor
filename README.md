@@ -2,6 +2,26 @@
 
 Web tarayıcı penceresinde kullanıcı aktivitesini **detaylı** bir şekilde gözlemlemek ve izlemek için geliştirilmiş gelişmiş TypeScript kütüphanesi. RxJS Observable pattern kullanarak kullanıcının aktif veya hareketsiz durumunu reaktif bir şekilde yayınlar.
 
+## 🎬 Live Demo
+
+**React + Ant Design ile görselleştirilmiş demo dashboard** mevcut!
+
+```bash
+cd demo-app
+npm install
+npm run dev
+```
+
+Demo dashboard özellikleri:
+- 📊 Real-time istatistikler ve grafikler
+- 🎯 Detaylı durum görüntüleyici
+- 📈 Aktivite zaman çizelgesi (Line & Pie charts)
+- 🔄 Multi-tab koordinasyon göstergesi
+- 📋 Aktivite timeline (son 100 olay)
+- 🎨 Modern ve responsive tasarım
+
+Demo hakkında detaylı bilgi için: [demo-app/README.md](./demo-app/README.md)
+
 ## 🎯 v2.0 Yeni Özellikler
 
 - **Detaylı Aktivite Nedenleri**: Her aktivite değişikliği için specific reason (20+ farklı neden)
