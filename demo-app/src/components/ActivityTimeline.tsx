@@ -2,7 +2,7 @@ import React from 'react';
 import { Card, Timeline, Tag, Typography, Empty, Space } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
 import type { ActivityLog } from '../hooks/useActivityTracker';
-import type { ActivityReason } from 'browser-activity-tracker';
+import type { ActivityReason } from '../lib';
 
 const { Title, Text } = Typography;
 

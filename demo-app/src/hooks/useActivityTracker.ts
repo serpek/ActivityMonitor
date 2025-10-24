@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { BrowserActivityTracker } from 'browser-activity-tracker';
-import type { ActivityEvent, ActivityStatus, ActivityReason, DetailedActivityState } from 'browser-activity-tracker';
+import { BrowserActivityTracker } from '../lib';
+import type { ActivityEvent, ActivityStatus, ActivityReason, DetailedActivityState } from '../lib';
 
 export interface ActivityStats {
   totalEvents: number;

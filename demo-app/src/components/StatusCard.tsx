@@ -1,7 +1,7 @@
 import React from 'react';
 import { Card, Tag, Typography, Space, Badge } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
-import type { ActivityStatus, ActivityReason } from 'browser-activity-tracker';
+import type { ActivityStatus, ActivityReason } from '../lib';
 
 const { Title, Text } = Typography;
 

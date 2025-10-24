@@ -1,6 +1,6 @@
 import React from 'react';
 import { Card, Descriptions, Badge, Tag, Typography } from 'antd';
-import type { DetailedActivityState } from 'browser-activity-tracker';
+import type { DetailedActivityState } from '../lib';
 
 const { Title } = Typography;
 
